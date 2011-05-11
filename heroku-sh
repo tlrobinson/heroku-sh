@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+
+require 'heroku'
+require 'heroku/command'
+
+SHELL = '/bin/bash'
+DEBUG = false
+
+COMMON_CODE = <<COMMON_CODE
+def shell_init(streams)
+  $reader, $writer = streams
+end
+def shell_write(output)
+  unless output.nil?
+    $writer.write output
+    $writer.flush
+  end
+end
+def shell_read
+  input = ""
+  begin
+    input += $reader.read_nonblock(1024) while true
+  rescue Exception => e
+  end
+  input.empty? ? nil : input
+end
+COMMON_CODE
+
+REMOTE_INIT_CODE = <<REMOTE_INIT_CODE
+require 'pty'
+shell_init PTY.spawn('#{SHELL}')
+REMOTE_INIT_CODE
+
+def debug(string)
+  puts string if DEBUG
+end
+
+eval(COMMON_CODE)
+shell_init [STDIN, STDOUT]
+
+app = Heroku::Command::App.new []
+heroku = app.heroku
+name = app.extract_app
+
+heroku.console(name) do |console|
+  console.run(COMMON_CODE+REMOTE_INIT_CODE)
+  loop do
+    command = shell_read
+
+    request = 'shell_read'
+    unless command.nil?
+      request = "shell_write #{command.dump}; #{request}"
+    end
+
+    debug ">>> #{request}"
+    response = console.run(request)
+    debug "<<< #{response}"
+
+    if response.start_with? "=> "
+      shell_write(eval(response[3..-1]))
+    else
+      shell_write(response)
+      exit 1
+    end
+
+    sleep 1
+  end
+end
